@@ -5,7 +5,11 @@ import numpy as np
 import time
 import threading
 import sys
-sys.path.insert(0, "..")
+import os
+
+# Ensure we can import from the parent directory (project root)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 from utils.pose_estimator import PoseEstimator
 from utils.exercise_analyzer import ExerciseAnalyzer
 from utils.session_manager import SessionManager
@@ -39,46 +43,64 @@ class PhysioVideoProcessor(VideoProcessorBase):
         self.angle_buffer = []
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        img = frame.to_ndarray(format="bgr24")
-        keypoints, bbox = self.pose.get_keypoints(img)
+        try:
+            img = frame.to_ndarray(format="bgr24")
+            keypoints, bbox = self.pose.get_keypoints(img)
 
-        with self.lock:
-            if (exercise_choice == "Auto-detect" and self.exercise is None) or st.session_state.get("exercise_override"):
-                if len(self.angle_buffer) < 60:
-                    if keypoints is not None:
-                        angles = self.analyzer.calc_all_angles(keypoints)
-                        self.angle_buffer.append(angles)
+            with self.lock:
+                if (exercise_choice == "Auto-detect" and self.exercise is None) or st.session_state.get("exercise_override"):
+                    if len(self.angle_buffer) < 60:
+                        if keypoints is not None:
+                            angles = self.analyzer.calc_all_angles(keypoints)
+                            self.angle_buffer.append(angles)
+                    else:
+                        self.exercise = self.analyzer.recognize_exercise(self.angle_buffer)
+                        st.session_state.recognized_exercise = self.exercise
+                        self.angle_buffer.clear()
                 else:
-                    self.exercise = self.analyzer.recognize_exercise(self.angle_buffer)
-                    st.session_state.recognized_exercise = self.exercise
-                    self.angle_buffer.clear()
-            else:
-                self.exercise = exercise_choice if exercise_choice != "Auto-detect" else self.exercise
+                    self.exercise = exercise_choice if exercise_choice != "Auto-detect" else self.exercise
 
-            if self.exercise and keypoints is not None:
-                feedback, color_guide, rep_done = self.analyzer.evaluate_form(
-                    self.exercise, keypoints, self.rep_state
-                )
-                self.feedback_text = feedback
-                if rep_done:
-                    self.rep_count += 1
-                    quality = self.analyzer.get_rep_quality(self.feedback_text)
-                    self.form_quality_history.append(quality)
-                    st.session_state.rep_count = self.rep_count
-                img = self.pose.draw_skeleton(img, keypoints, color_guide)
-                img = self.analyzer.draw_feedback(img, self.feedback_text, self.rep_count, self.exercise)
-            else:
-                img = self.pose.draw_text(img, "Position yourself in frame", (50,50))
-                if self.exercise is None and exercise_choice == "Auto-detect":
-                    img = self.pose.draw_text(img, "Auto-detecting exercise...", (50,90))
+                if self.exercise and keypoints is not None:
+                    feedback, color_guide, rep_done = self.analyzer.evaluate_form(
+                        self.exercise, keypoints, self.rep_state
+                    )
+                    self.feedback_text = feedback
+                    if rep_done:
+                        self.rep_count += 1
+                        quality = self.analyzer.get_rep_quality(self.feedback_text)
+                        self.form_quality_history.append(quality)
+                        st.session_state.rep_count = self.rep_count
+                    img = self.pose.draw_skeleton(img, keypoints, color_guide)
+                    img = self.analyzer.draw_feedback(img, self.feedback_text, self.rep_count, self.exercise)
+                else:
+                    img = self.pose.draw_text(img, "Position yourself in frame", (50, 50))
+                    if self.exercise is None and exercise_choice == "Auto-detect":
+                        img = self.pose.draw_text(img, "Auto-detecting exercise...", (50, 90))
 
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
+        except Exception as e:
+            # Log the error and return original frame with error text
+            img = frame.to_ndarray(format="bgr24")
+            img = self.pose.draw_text(img, f"Error: {str(e)[:50]}", (50, 50))
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 webrtc_ctx = webrtc_streamer(
     key="physio-camera",
     mode=WebRtcMode.SENDRECV,
     rtc_configuration=RTCConfiguration(
-        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+        {"iceServers": [
+            {"urls": ["stun:stun.l.google.com:19302"]},
+            {
+                "urls": ["turn:openrelay.metered.ca:80"],
+                "username": "openrelayproject",
+                "credential": "openrelayproject"
+            },
+            {
+                "urls": ["turn:openrelay.metered.ca:443"],
+                "username": "openrelayproject",
+                "credential": "openrelayproject"
+            }
+        ]}
     ),
     media_stream_constraints={"video": True, "audio": False},
     video_processor_factory=PhysioVideoProcessor,
