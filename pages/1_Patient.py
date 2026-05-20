@@ -33,7 +33,8 @@ class PhysioVideoProcessor(VideoProcessorBase):
         self.analyzer = analyzer
         self.lock = threading.Lock()
         self.start_time = time.time()
-        self.rep_state = {"curl": "down", "squat": "up"}
+        # Fresh rep_state dict – no old keys
+        self.rep_state = {}
         self.rep_count = 0
         self.form_quality_history = []
         self.exercise = None
@@ -86,20 +87,11 @@ webrtc_ctx = webrtc_streamer(
     mode=WebRtcMode.SENDRECV,
     rtc_configuration=RTCConfiguration(
         {"iceServers": [
-            # Google STUN
             {"urls": ["stun:stun.l.google.com:19302"]},
-            # Free STUN/TURN from freestun.net (TCP/UDP)
-            {"urls": ["turn:freestun.net:3478"],
-             "username": "free",
-             "credential": "free"},
-            # Metered.ca TURN (TCP on port 443, bypasses firewalls)
+            {"urls": ["turn:freestun.net:3478"], "username": "free", "credential": "free"},
             {"urls": ["turn:openrelay.metered.ca:443?transport=tcp"],
-             "username": "openrelayproject",
-             "credential": "openrelayproject"},
-            # Twilio test TURN (global, often works)
-            {"urls": ["turn:34.203.254.2:3478"],
-             "username": "test",
-             "credential": "test"}
+             "username": "openrelayproject", "credential": "openrelayproject"},
+            {"urls": ["turn:34.203.254.2:3478"], "username": "test", "credential": "test"}
         ]}
     ),
     media_stream_constraints={
