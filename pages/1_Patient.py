@@ -7,15 +7,13 @@ import threading
 import sys
 import os
 
-# Ensure we can import from the parent directory (project root)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 from utils.pose_estimator import PoseEstimator
 from utils.exercise_analyzer import ExerciseAnalyzer
 from utils.session_manager import SessionManager
 
 st.set_page_config(page_title="Patient – PhysioForm", layout="wide")
-st.title("🧑‍⚕️ Patient Exercise Session")
+st.title("🧑‍⚕️ Patient Exercise Session (Live Stream)")
 
 patient_id = st.text_input("Enter your Patient ID", value="patient_001")
 exercise_choice = st.selectbox("Choose your exercise (or auto-detect)", ["Auto-detect", "Biceps Curl", "Squat"])
@@ -79,7 +77,6 @@ class PhysioVideoProcessor(VideoProcessorBase):
 
             return av.VideoFrame.from_ndarray(img, format="bgr24")
         except Exception as e:
-            # Log the error and return original frame with error text
             img = frame.to_ndarray(format="bgr24")
             img = self.pose.draw_text(img, f"Error: {str(e)[:50]}", (50, 50))
             return av.VideoFrame.from_ndarray(img, format="bgr24")
@@ -89,20 +86,26 @@ webrtc_ctx = webrtc_streamer(
     mode=WebRtcMode.SENDRECV,
     rtc_configuration=RTCConfiguration(
         {"iceServers": [
+            # Google STUN
             {"urls": ["stun:stun.l.google.com:19302"]},
-            {
-                "urls": ["turn:openrelay.metered.ca:80"],
-                "username": "openrelayproject",
-                "credential": "openrelayproject"
-            },
-            {
-                "urls": ["turn:openrelay.metered.ca:443"],
-                "username": "openrelayproject",
-                "credential": "openrelayproject"
-            }
+            # Free STUN/TURN from freestun.net (TCP/UDP)
+            {"urls": ["turn:freestun.net:3478"],
+             "username": "free",
+             "credential": "free"},
+            # Metered.ca TURN (TCP on port 443, bypasses firewalls)
+            {"urls": ["turn:openrelay.metered.ca:443?transport=tcp"],
+             "username": "openrelayproject",
+             "credential": "openrelayproject"},
+            # Twilio test TURN (global, often works)
+            {"urls": ["turn:34.203.254.2:3478"],
+             "username": "test",
+             "credential": "test"}
         ]}
     ),
-    media_stream_constraints={"video": True, "audio": False},
+    media_stream_constraints={
+        "video": {"width": 320, "height": 240, "frameRate": 15},
+        "audio": False
+    },
     video_processor_factory=PhysioVideoProcessor,
     async_processing=True,
 )
