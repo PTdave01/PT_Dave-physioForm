@@ -12,6 +12,7 @@ class ExerciseAnalyzer:
     }
 
     def calc_angle(self, a, b, c):
+        """Angle at point b (shoulder-elbow-wrist or hip-knee-ankle)."""
         a, b, c = np.array(a), np.array(b), np.array(c)
         ba = a - b
         bc = c - b
@@ -20,6 +21,7 @@ class ExerciseAnalyzer:
         return angle
 
     def calc_all_angles(self, keypoints):
+        """Extract joint angles for recognition."""
         angles = {}
         if keypoints is None:
             return angles
@@ -27,29 +29,32 @@ class ExerciseAnalyzer:
             sh = self.KP[f"{side}_shoulder"]
             el = self.KP[f"{side}_elbow"]
             wr = self.KP[f"{side}_wrist"]
-            if all(keypoints[i][0]>0 for i in [sh,el,wr]):
+            if all(keypoints[i][0] > 0 for i in [sh, el, wr]):
                 angles[f"{side}_elbow"] = self.calc_angle(keypoints[sh], keypoints[el], keypoints[wr])
         for side in ['left', 'right']:
             hip = self.KP[f"{side}_hip"]
             knee = self.KP[f"{side}_knee"]
             ank = self.KP[f"{side}_ankle"]
-            if all(keypoints[i][0]>0 for i in [hip, knee, ank]):
+            if all(keypoints[i][0] > 0 for i in [hip, knee, ank]):
                 angles[f"{side}_knee"] = self.calc_angle(keypoints[hip], keypoints[knee], keypoints[ank])
-                angles[f"{side}_hip"] = self.calc_angle(keypoints[self.KP[f"{side}_shoulder"]], keypoints[hip], keypoints[knee])
+                angles[f"{side}_hip"] = self.calc_angle(
+                    keypoints[self.KP[f"{side}_shoulder"]], keypoints[hip], keypoints[knee]
+                )
         return angles
 
     def recognize_exercise(self, angle_buffer):
+        """Simple variance-based classifier."""
         elbow_vars = []
         knee_vars = []
         for angles in angle_buffer:
             left_elbow = angles.get('left_elbow', None)
             right_elbow = angles.get('right_elbow', None)
             if left_elbow and right_elbow:
-                elbow_vars.append((left_elbow + right_elbow)/2)
+                elbow_vars.append((left_elbow + right_elbow) / 2)
             left_knee = angles.get('left_knee', None)
             right_knee = angles.get('right_knee', None)
             if left_knee and right_knee:
-                knee_vars.append((left_knee + right_knee)/2)
+                knee_vars.append((left_knee + right_knee) / 2)
         if len(elbow_vars) > 10 and len(knee_vars) > 10:
             var_elbow = np.var(elbow_vars)
             var_knee = np.var(knee_vars)
@@ -60,6 +65,9 @@ class ExerciseAnalyzer:
         return None
 
     def evaluate_form(self, exercise, keypoints, rep_state):
+        """
+        Returns (feedback_text, color_guide_dict, rep_done_bool).
+        """
         feedback = ""
         color_guide = {}
         rep_done = False
@@ -73,76 +81,113 @@ class ExerciseAnalyzer:
         feedback = ""
         color_guide = {}
         rep_done = False
+
+        # Use the first visible arm (right preferred)
         for side in ['right', 'left']:
             sh = self.KP[f"{side}_shoulder"]
             el = self.KP[f"{side}_elbow"]
             wr = self.KP[f"{side}_wrist"]
-            if all(kp[i][0]>0 for i in [sh, el, wr]):
+            if all(kp[i][0] > 0 for i in [sh, el, wr]):
                 angle = self.calc_angle(kp[sh], kp[el], kp[wr])
+
+                # Rep state machine (using 'prev_curl' to remember last stable state)
+                if 'prev_curl' not in rep_state:
+                    rep_state['prev_curl'] = None   # initialize
+
+                # Define thresholds (softened)
+                DOWN_THRESH = 150   # arm almost straight
+                UP_THRESH = 50      # arm fully curled
+
+                if angle > DOWN_THRESH:
+                    # Arm extended -> we are in "down" position
+                    rep_state["prev_curl"] = "down"
+                    feedback = "Extend arms fully"
+                    color_guide[(sh, el)] = (0, 255, 0)
+                    color_guide[(el, wr)] = (0, 255, 0)
+
+                elif angle < UP_THRESH:
+                    # Arm curled -> we are in "up" position
+                    if rep_state["prev_curl"] == "down":
+                        # We just transitioned from down to up -> rep completed!
+                        rep_done = True
+                    rep_state["prev_curl"] = "up"
+                    feedback = "Curl up – good"
+                    color_guide[(sh, el)] = (0, 255, 0)
+                    color_guide[(el, wr)] = (0, 255, 0)
+
+                else:
+                    # In between
+                    feedback = "Lower down" if rep_state.get("prev_curl") == "up" else "Curl up"
+                    color_guide[(sh, el)] = (0, 255, 255)
+                    color_guide[(el, wr)] = (0, 255, 255)
+
+                # Shoulder stability check
                 shoulder_y = kp[sh][1]
                 hip_y = kp[self.KP[f"{side}_hip"]][1]
                 shoulder_displacement = shoulder_y - hip_y
-                if angle > 160:
-                    rep_state["curl"] = "down"
-                    color_guide[(sh, el)] = (0,255,0)
-                    color_guide[(el, wr)] = (0,255,0)
-                    feedback = "Extend arms fully"
-                elif angle < 40:
-                    rep_state["curl"] = "up"
-                    color_guide[(sh, el)] = (0,255,0)
-                    color_guide[(el, wr)] = (0,255,0)
-                    if rep_state.get("prev_rep") == "down":
-                        rep_done = True
-                    rep_state["prev_rep"] = "up"
-                else:
-                    feedback = "Curl up" if rep_state["curl"] == "up" else "Lower down"
-                    color_guide[(sh, el)] = (0,255,255)
-                    color_guide[(el, wr)] = (0,255,255)
                 if shoulder_displacement > 20:
                     feedback += " | Keep shoulders steady!"
-                    color_guide[(sh, el)] = (0,0,255)
-                break
+                    color_guide[(sh, el)] = (0, 0, 255)
+
+                break   # only process one arm
         return feedback, color_guide, rep_done
 
     def _squat_form(self, kp, rep_state):
         feedback = ""
         color_guide = {}
         rep_done = False
+
         for side in ['right', 'left']:
             hip = self.KP[f"{side}_hip"]
             knee = self.KP[f"{side}_knee"]
             ank = self.KP[f"{side}_ankle"]
             sh = self.KP[f"{side}_shoulder"]
-            if all(kp[i][0]>0 for i in [hip, knee, ank]):
+            if all(kp[i][0] > 0 for i in [hip, knee, ank]):
                 knee_angle = self.calc_angle(kp[hip], kp[knee], kp[ank])
-                hip_angle = self.calc_angle(kp[sh], kp[hip], kp[knee]) if kp[sh][0]>0 else 180
-                torso_angle = np.degrees(np.arctan2(kp[sh][0]-kp[hip][0], kp[sh][1]-kp[hip][1])) if kp[sh][0]>0 else 0
-                if knee_angle > 160:
-                    rep_state["squat"] = "up"
+
+                if 'prev_squat' not in rep_state:
+                    rep_state['prev_squat'] = None
+
+                STAND_THRESH = 150   # standing
+                DOWN_THRESH = 80     # squat depth
+
+                if knee_angle > STAND_THRESH:
+                    # Standing
+                    rep_state["prev_squat"] = "up"
                     feedback = "Standing"
-                    color_guide[(hip, knee)] = (0,255,0)
-                    color_guide[(knee, ank)] = (0,255,0)
-                elif knee_angle < 90:
-                    rep_state["squat"] = "down"
-                    if rep_state.get("prev_squat") == "up":
+                    color_guide[(hip, knee)] = (0, 255, 0)
+                    color_guide[(knee, ank)] = (0, 255, 0)
+
+                elif knee_angle < DOWN_THRESH:
+                    # Squat down
+                    if rep_state["prev_squat"] == "up":
                         rep_done = True
                     rep_state["prev_squat"] = "down"
                     feedback = "Squat depth good"
-                    color_guide[(hip, knee)] = (0,255,0)
-                    color_guide[(knee, ank)] = (0,255,0)
+                    color_guide[(hip, knee)] = (0, 255, 0)
+                    color_guide[(knee, ank)] = (0, 255, 0)
+
                 else:
-                    feedback = "Go deeper" if rep_state["squat"] == "up" else "Rise up"
-                    color_guide[(hip, knee)] = (0,255,255)
-                    color_guide[(knee, ank)] = (0,255,255)
+                    # Transition
+                    feedback = "Go deeper" if rep_state.get("prev_squat") == "up" else "Rise up"
+                    color_guide[(hip, knee)] = (0, 255, 255)
+                    color_guide[(knee, ank)] = (0, 255, 255)
+
+                # Knee tracking over toes (side view)
                 knee_x = kp[knee][0]
                 ank_x = kp[ank][0]
                 if knee_x - ank_x > 30:
                     feedback += " | Don't let knees go too far forward!"
-                    color_guide[(knee, ank)] = (0,0,255)
-                if abs(torso_angle) < 30:
-                    feedback += " | Keep back straighter"
-                    color_guide[(sh, hip)] = (0,0,255)
-                break
+                    color_guide[(knee, ank)] = (0, 0, 255)
+
+                # Back straight
+                if kp[sh][0] > 0:
+                    torso_angle = np.degrees(np.arctan2(kp[sh][0] - kp[hip][0], kp[sh][1] - kp[hip][1]))
+                    if abs(torso_angle) < 30:
+                        feedback += " | Keep back straighter"
+                        color_guide[(sh, hip)] = (0, 0, 255)
+
+                break   # only one leg
         return feedback, color_guide, rep_done
 
     def get_rep_quality(self, last_feedback=""):
@@ -152,11 +197,11 @@ class ExerciseAnalyzer:
 
     def draw_feedback(self, img, feedback, rep_count, exercise):
         h, w = img.shape[:2]
-        cv2.putText(img, f"Exercise: {exercise}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 2)
-        cv2.putText(img, f"Reps: {rep_count}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
+        cv2.putText(img, f"Exercise: {exercise}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.putText(img, f"Reps: {rep_count}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         if feedback:
             y0, dy = 100, 30
             for i, line in enumerate(feedback.split("|")):
-                y = y0 + i*dy
-                cv2.putText(img, line.strip(), (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
+                y = y0 + i * dy
+                cv2.putText(img, line.strip(), (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
         return img
