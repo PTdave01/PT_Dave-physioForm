@@ -7,7 +7,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Clinician Dashboard – PhysioForm", layout="wide")
 
-# ─── Authentication (unique key to avoid conflicts) ─────────────────
+# ─── Authentication ─────────────────────────────────────────────────
 if "clinician_auth" not in st.session_state:
     st.session_state.clinician_auth = False
 
@@ -15,16 +15,15 @@ if not st.session_state.clinician_auth:
     st.title("🔐 Clinician Login")
     password = st.text_input("Enter password", type="password")
     if st.button("Login"):
-        # Read password from Streamlit Secrets – fallback for local testing
         correct_password = st.secrets.get("CLINICIAN_PASSWORD", "admin")
         if password == correct_password:
             st.session_state.clinician_auth = True
             st.rerun()
         else:
             st.error("Wrong password")
-    st.stop()  # Stop here – nothing below will be shown unless logged in
+    st.stop()
 
-# If we reach here, the user is authenticated
+# Logout button
 st.sidebar.button("🔒 Logout", on_click=lambda: st.session_state.update({"clinician_auth": False}))
 
 # ─── Dashboard ─────────────────────────────────────────────────────
@@ -67,20 +66,23 @@ else:
     # ---- Charts ----
     st.subheader("Progress Over Time")
     if not filtered_df.empty:
+        # Average Form Quality over time
         quality_over_time = filtered_df.groupby('date')['avg_form_quality'].mean().reset_index()
         quality_over_time['avg_form_quality'] *= 100
         fig1 = px.line(quality_over_time, x='date', y='avg_form_quality',
                        title='Average Form Quality (%)', markers=True)
-        fig1.update_y_range(0, 100)
+        fig1.update_yaxes(range=[0, 100])
         fig1.update_layout(height=350)
         st.plotly_chart(fig1, use_container_width=True)
 
+        # Total Reps per Day
         reps_over_time = filtered_df.groupby('date')['reps'].sum().reset_index()
         fig2 = px.bar(reps_over_time, x='date', y='reps',
                       title='Total Reps per Day', color='reps', color_continuous_scale='blues')
         fig2.update_layout(height=350)
         st.plotly_chart(fig2, use_container_width=True)
 
+        # Form Quality by Exercise
         st.subheader("Form Quality by Exercise")
         quality_by_exercise = filtered_df.groupby('exercise')['avg_form_quality'].mean().reset_index()
         quality_by_exercise['avg_form_quality'] *= 100
@@ -89,6 +91,7 @@ else:
         fig3.update_layout(height=400)
         st.plotly_chart(fig3, use_container_width=True)
 
+        # Patient Activity Heatmap
         st.subheader("Patient Activity Heatmap")
         heatmap_data = filtered_df.groupby(['patient_id', 'week']).size().reset_index(name='sessions')
         fig4 = px.density_heatmap(heatmap_data, x='week', y='patient_id', z='sessions',
@@ -98,6 +101,7 @@ else:
     else:
         st.warning("No data with current filters.")
 
+    # Raw data table
     st.subheader("Session Log")
     st.dataframe(filtered_df[['patient_id', 'exercise', 'reps', 'avg_form_quality', 'duration', 'date']],
                  use_container_width=True)
