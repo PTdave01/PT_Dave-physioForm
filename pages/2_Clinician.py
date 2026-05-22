@@ -1,9 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 from utils.session_manager import SessionManager
-from datetime import datetime
 
 st.set_page_config(page_title="Clinician Dashboard – PhysioForm", layout="wide")
 
@@ -64,7 +62,6 @@ else:
     col4.metric("Unique Patients", filtered_df['patient_id'].nunique())
 
     # ---- Charts ----
-    st.subheader("Progress Over Time")
     if not filtered_df.empty:
         # Average Form Quality over time
         quality_over_time = filtered_df.groupby('date')['avg_form_quality'].mean().reset_index()
@@ -99,7 +96,7 @@ else:
         fig4.update_layout(height=400)
         st.plotly_chart(fig4, use_container_width=True)
     else:
-        st.warning("No data with current filters.")
+        st.warning("No data with the current filters.")
 
     # Raw data table
     st.subheader("Session Log")
