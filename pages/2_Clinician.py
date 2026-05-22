@@ -1,38 +1,139 @@
 import streamlit as st
 import pandas as pd
-import sys
-sys.path.insert(0, "..")
+import plotly.express as px
+import plotly.graph_objects as go
 from utils.session_manager import SessionManager
+from datetime import datetime
 
 st.set_page_config(page_title="Clinician Dashboard – PhysioForm", layout="wide")
+
+# ─── Authentication ────────────────────────────────────────────────
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    st.title("🔐 Clinician Login")
+    password = st.text_input("Enter password", type="password")
+    if st.button("Login"):
+        # Try to get password from secrets, fallback to "admin" (change this if no secrets)
+        correct_password = st.secrets.get("CLINICIAN_PASSWORD", "admin")
+        if password == correct_password:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Wrong password")
+    st.stop()  # Stop rendering anything else until authenticated
+
+# ─── Dashboard ─────────────────────────────────────────────────────
 st.title("👨‍⚕️ Clinician Dashboard")
 
 session_manager = SessionManager()
 sessions = session_manager.load_all_sessions()
 
 if not sessions:
-    st.info("No sessions recorded yet.")
+    st.info("No sessions recorded yet. Ask a patient to complete an exercise session.")
 else:
     df = pd.DataFrame(sessions)
+    # Convert timestamp
     df['timestamp'] = pd.to_datetime(df['start_time'], unit='s')
     df['date'] = df['timestamp'].dt.date
+    df['week'] = df['timestamp'].dt.isocalendar().week
 
+    # ---- Sidebar filters ----
+    st.sidebar.header("Filters")
     patients = df['patient_id'].unique()
-    selected_patient = st.selectbox("Select Patient", ["All"] + list(patients))
+    selected_patient = st.sidebar.selectbox("Select Patient", ["All"] + list(patients))
+    exercise_types = df['exercise'].unique()
+    selected_exercise = st.sidebar.selectbox("Select Exercise", ["All"] + list(exercise_types))
 
+    # Apply filters
+    mask = pd.Series(True, index=df.index)
     if selected_patient != "All":
-        df = df[df['patient_id'] == selected_patient]
+        mask &= df['patient_id'] == selected_patient
+    if selected_exercise != "All":
+        mask &= df['exercise'] == selected_exercise
+    filtered_df = df[mask]
 
+    # ---- Top KPI cards ----
+    st.subheader("Key Metrics")
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Sessions", len(df))
-    col2.metric("Avg Reps/Session", round(df['reps'].mean(), 1) if not df.empty else 0)
-    col3.metric("Avg Form Quality", f"{round(df['avg_form_quality'].mean()*100, 1)}%" if not df.empty else "N/A")
-    col4.metric("Patients Active", df['patient_id'].nunique())
+    col1.metric("Total Sessions", len(filtered_df))
+    col2.metric("Avg Reps / Session", round(filtered_df['reps'].mean(), 1) if not filtered_df.empty else 0)
+    avg_quality = filtered_df['avg_form_quality'].mean() * 100 if not filtered_df.empty else 0
+    col3.metric("Avg Form Quality", f"{avg_quality:.1f}%")
+    col4.metric("Unique Patients", filtered_df['patient_id'].nunique())
 
+    # ---- Charts Row 1: Quality & Reps over time ----
+    st.subheader("Progress Over Time")
+    if not filtered_df.empty:
+        # Form quality trend (line chart)
+        quality_over_time = filtered_df.groupby('date')['avg_form_quality'].mean().reset_index()
+        quality_over_time['avg_form_quality'] *= 100  # convert to percentage
+
+        fig1 = px.line(
+            quality_over_time,
+            x='date',
+            y='avg_form_quality',
+            title='Average Form Quality (%)',
+            labels={'avg_form_quality': 'Quality %', 'date': 'Date'},
+            markers=True
+        )
+        fig1.update_y_range(0, 100)
+        fig1.update_layout(height=350)
+        st.plotly_chart(fig1, use_container_width=True)
+
+        # Reps per session over time
+        reps_over_time = filtered_df.groupby('date')['reps'].sum().reset_index()
+        fig2 = px.bar(
+            reps_over_time,
+            x='date',
+            y='reps',
+            title='Total Reps per Day',
+            labels={'reps': 'Reps', 'date': 'Date'},
+            color='reps',
+            color_continuous_scale='blues'
+        )
+        fig2.update_layout(height=350)
+        st.plotly_chart(fig2, use_container_width=True)
+
+        # ---- Chart: Quality per exercise type ----
+        st.subheader("Form Quality by Exercise")
+        quality_by_exercise = filtered_df.groupby(['exercise'])['avg_form_quality'].mean().reset_index()
+        quality_by_exercise['avg_form_quality'] *= 100
+        fig3 = px.bar(
+            quality_by_exercise,
+            x='exercise',
+            y='avg_form_quality',
+            color='exercise',
+            title='Average Form Quality per Exercise',
+            labels={'avg_form_quality': 'Quality %'},
+            text_auto='.1f'
+        )
+        fig3.update_layout(height=400)
+        st.plotly_chart(fig3, use_container_width=True)
+
+        # ---- Patient adherence heatmap ----
+        st.subheader("Patient Activity Heatmap (Sessions per Week)")
+        # Prepare data: count sessions per patient per week
+        if not filtered_df.empty:
+            heatmap_data = filtered_df.groupby(['patient_id', 'week']).size().reset_index(name='sessions')
+            fig4 = px.density_heatmap(
+                heatmap_data,
+                x='week',
+                y='patient_id',
+                z='sessions',
+                color_continuous_scale='greens',
+                title='Sessions per Week per Patient'
+            )
+            fig4.update_layout(height=400)
+            st.plotly_chart(fig4, use_container_width=True)
+
+    else:
+        st.warning("No data with current filters.")
+
+    # ---- Raw data table ----
     st.subheader("Session Log")
-    st.dataframe(df[['patient_id', 'exercise', 'reps', 'avg_form_quality', 'duration', 'date']])
-
-    st.subheader("Form Quality Trend")
-    if not df.empty:
-        quality_df = df.groupby('date')['avg_form_quality'].mean().reset_index()
-        st.line_chart(quality_df.set_index('date'))
+    st.dataframe(
+        filtered_df[['patient_id', 'exercise', 'reps', 'avg_form_quality', 'duration', 'date']],
+        use_container_width=True
+    )
